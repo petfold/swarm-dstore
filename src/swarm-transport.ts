@@ -400,14 +400,6 @@ export const createSwarmProviderTransport = (
         );
         return asBytes(soc.data, soc.encoding);
       } catch (error) {
-        // Keep the provider's raw refusal visible: "not found" and "cannot
-        // reach it yet" and "malformed request" all surface here, and the
-        // null return otherwise erases the difference.
-        console.debug('[swarm] provider swarm_readSingleOwnerChunk failed', {
-          owner,
-          index,
-          error,
-        });
         if (isNotFound(error)) return null;
         throw error;
       }

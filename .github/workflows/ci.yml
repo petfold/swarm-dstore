@@ -19,6 +19,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # Fileverse's Prettier settings, so copies pass their lint unchanged.
+      - run: pnpm format:check
       # Tests that need a Bee node skip themselves here: CI has none.
       - run: pnpm test
       - run: pnpm build
