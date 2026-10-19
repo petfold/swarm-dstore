@@ -82,7 +82,7 @@ describe.skipIf(!postageBatchId)(
   () => {
     const makeStorage = (documentKey?: string) =>
       createSwarmDocumentStorage({
-        namespace: 'dsheet',
+        namespace: 'test',
         beeUrl: BEE_URL,
         postageBatchId: postageBatchId!,
         ownerPrivateKey: generatePrivateKey(),
@@ -156,7 +156,7 @@ describe.skipIf(!postageBatchId)(
         const documentId = `test-${bytesToHex(crypto.getRandomValues(new Uint8Array(8)))}`;
         const ownerPrivateKey = generatePrivateKey();
         const write = createSwarmDocumentStorage({
-          namespace: 'dsheet',
+          namespace: 'test',
           beeUrl: BEE_URL,
           postageBatchId: postageBatchId!,
           ownerPrivateKey,
@@ -165,7 +165,7 @@ describe.skipIf(!postageBatchId)(
         await write.saveDocument(documentId, 'secret');
 
         const wrongKey = createSwarmDocumentStorage({
-          namespace: 'dsheet',
+          namespace: 'test',
           beeUrl: BEE_URL,
           ownerPrivateKey,
           documentKey: generateDocumentKey(),

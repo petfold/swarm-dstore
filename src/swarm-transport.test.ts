@@ -152,7 +152,7 @@ describe('provider transport', () => {
 
   it('round-trips a feed update through single-owner chunks', async () => {
     const transport = createSwarmProviderTransport(fakeProvider());
-    const topic = makeFeedTopic('dsheet/v1/doc-1');
+    const topic = makeFeedTopic('test/v1/doc-1');
     const owner = await transport.feedOwner();
     const payload = new Uint8Array([9, 8, 7]);
 
@@ -162,7 +162,7 @@ describe('provider transport', () => {
 
   it('reports an absent update as null rather than throwing', async () => {
     const transport = createSwarmProviderTransport(fakeProvider());
-    const topic = makeFeedTopic('dsheet/v1/nothing-here');
+    const topic = makeFeedTopic('test/v1/nothing-here');
     expect(await transport.readFeedUpdate(OTHER_OWNER, topic, 3)).toBeNull();
   });
 

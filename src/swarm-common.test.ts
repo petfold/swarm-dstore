@@ -104,7 +104,7 @@ describe('readWithProgress', () => {
 // previously hung forever on such a node.
 describe('read-only nodes (no postage batch)', () => {
   const storageConfig = {
-    namespace: 'dsheet',
+    namespace: 'test',
     beeUrl: 'http://bee.invalid',
     ownerPrivateKey: OWNER,
     documentKey: DOC_KEY,

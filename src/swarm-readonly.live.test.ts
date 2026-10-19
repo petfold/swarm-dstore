@@ -31,7 +31,7 @@ const nodeState = await (async () => {
 describe.skipIf(nodeState !== 'no-batch')('stamp-less Bee node (live)', () => {
   const storage = () =>
     createSwarmDocumentStorage({
-      namespace: 'ddoc',
+      namespace: 'test',
       beeUrl: BEE_URL,
       // No postageBatchId — the whole point of this suite.
       ownerPrivateKey: generatePrivateKey(),

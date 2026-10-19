@@ -189,7 +189,7 @@ const overHttp = () => {
   const node = fakeBeeNode();
   vi.stubGlobal('fetch', node.handler);
   return createSwarmDocumentStorage({
-    namespace: 'ddoc',
+    namespace: 'test',
     beeUrl: 'http://bee.invalid',
     postageBatchId: 'ab'.repeat(32),
     ownerPrivateKey: OWNER_KEY,
@@ -201,7 +201,7 @@ const overHttp = () => {
 // which is how a document authored in such a browser works.
 const overProvider = () =>
   createSwarmDocumentStorage({
-    namespace: 'ddoc',
+    namespace: 'test',
     beeUrl: 'http://unused.invalid',
     documentKey,
     transport: createSwarmProviderTransport(fakeProviderNode()),
@@ -301,7 +301,7 @@ describe('a document shared by link', () => {
     const provider = fakeProviderNode();
     const transport = createSwarmProviderTransport(provider);
     const storage = createSwarmDocumentStorage({
-      namespace: 'ddoc',
+      namespace: 'test',
       beeUrl: 'http://unused.invalid',
       ownerPrivateKey: sharedKey,
       documentKey,
@@ -319,7 +319,7 @@ describe('a document shared by link', () => {
     const calls: string[] = [];
     const inner = fakeProviderNode();
     const storage = createSwarmDocumentStorage({
-      namespace: 'ddoc',
+      namespace: 'test',
       beeUrl: 'http://unused.invalid',
       ownerPrivateKey: sharedKey,
       documentKey,
@@ -339,7 +339,7 @@ describe('a document shared by link', () => {
 
   it('refuses to save it, explaining that the browser signs as itself', async () => {
     const storage = createSwarmDocumentStorage({
-      namespace: 'ddoc',
+      namespace: 'test',
       beeUrl: 'http://unused.invalid',
       ownerPrivateKey: sharedKey,
       documentKey,
@@ -356,7 +356,7 @@ describe('a document shared by link', () => {
     const node = fakeBeeNode();
     vi.stubGlobal('fetch', node.handler);
     const storage = createSwarmDocumentStorage({
-      namespace: 'ddoc',
+      namespace: 'test',
       beeUrl: 'http://bee.invalid',
       postageBatchId: 'ab'.repeat(32),
       ownerPrivateKey: sharedKey,
