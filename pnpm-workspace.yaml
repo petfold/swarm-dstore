@@ -1,0 +1,2 @@
+allowBuilds:
+  esbuild: false  # esbuild postinstall overwrites its JS bin with the ELF binary, which breaks pnpm shims; the JS wrapper works fine

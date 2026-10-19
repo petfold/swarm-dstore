@@ -1,0 +1,18 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+*.log
+.DS_Store
+# never commit keys (CLAUDE.md rule 5)
+*.key
+*.pem
+spikes/**/secrets*
+
+# spike build output
+spikes/*/web/*.js
+spikes/**/web/*.js
+
+# stamper checkpoints written by gate runs (device state, not evidence)
+spikes/phase2/results/stamper-*.json

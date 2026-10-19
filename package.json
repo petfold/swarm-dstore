@@ -1,0 +1,39 @@
+{
+  "name": "swarm-dstore",
+  "version": "0.0.0",
+  "description": "Document and image storage on Ethereum Swarm for browser editors: encrypted snapshots with version history on feeds, postage stamps, diagnostics, and a transport for a Bee node or window.swarm",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/petfold/swarm-dstore.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "viem": "^2.35.0",
+    "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "viem": "^2.35.0"
+  }
+}
