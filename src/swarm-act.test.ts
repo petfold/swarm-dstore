@@ -13,10 +13,9 @@ import {
   openActReference,
   walkMantarayValues,
   writeMantaray,
-  type ByteLoader,
-  type ByteUploader,
   type MantarayValue,
 } from './swarm-act';
+import type { ByteLoader, ByteUploader } from './swarm-bytes';
 import { bytesToHex, hexToBytes } from './swarm-common';
 import { chunkAddress } from './swarm-feeds';
 

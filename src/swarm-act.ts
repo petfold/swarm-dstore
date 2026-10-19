@@ -1,12 +1,7 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256 } from 'viem';
-import {
-  type SwarmRequestConfig,
-  bytesToHex,
-  concatBytes,
-  hexToBytes,
-  swarmFetch,
-} from './swarm-common';
+import type { ByteLoader, ByteUploader } from './swarm-bytes';
+import { bytesToHex, concatBytes, hexToBytes } from './swarm-common';
 
 /**
  * Swarm's access control (ACT) in the browser, with keys the app holds. No
@@ -70,48 +65,6 @@ export const beeCipher = (key: Uint8Array, data: Uint8Array): Uint8Array => {
 };
 
 // ─── Mantaray ───
-
-/** Fetches the bytes stored under a reference (hex). */
-export type ByteLoader = (reference: string) => Promise<Uint8Array>;
-
-/** Stores bytes and returns their reference (hex), as `POST /bytes` does. */
-export type ByteUploader = (data: Uint8Array<ArrayBuffer>) => Promise<string>;
-
-/** A loader over a Bee node's `GET /bytes/{reference}`. */
-export const beeByteLoader =
-  (config: SwarmRequestConfig): ByteLoader =>
-  async (reference) => {
-    const response = await swarmFetch(config, `/bytes/${reference}`);
-    if (!response.ok) throw new Error(`Not found on Swarm: ${reference}`);
-    return new Uint8Array(await response.arrayBuffer());
-  };
-
-/**
- * An uploader over a Bee node's `POST /bytes`. ACT data must be stored this
- * way, unwrapped: Bee loads it by its raw reference.
- */
-export const beeByteUploader =
-  (
-    config: SwarmRequestConfig & {
-      postageBatchId: string;
-      deferredUpload?: boolean;
-    },
-  ): ByteUploader =>
-  async (data) => {
-    const response = await swarmFetch(config, '/bytes', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/octet-stream',
-        'swarm-postage-batch-id': config.postageBatchId,
-        ...(config.deferredUpload === false
-          ? { 'swarm-deferred-upload': 'false' }
-          : {}),
-      },
-      body: data,
-    });
-    if (!response.ok) throw new Error('Swarm upload failed');
-    return ((await response.json()) as { reference: string }).reference;
-  };
 
 export interface MantarayFork {
   type: number;

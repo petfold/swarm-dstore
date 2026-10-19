@@ -8,13 +8,18 @@ import { expect, it } from 'vitest';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import {
   ActAccessDeniedError,
-  beeByteLoader,
-  beeByteUploader,
   encryptActReference,
   grantActAccess,
   openActReference,
 } from '../src/swarm-act';
-import { bytesToHex } from '../src/swarm-common';
+import {
+  beeByteLoader,
+  beeByteUploader,
+  providerByteLoader,
+  providerByteUploader,
+} from '../src/swarm-bytes';
+import type { SwarmProvider } from '../src/swarm-transport';
+import { bytesToHex, concatBytes, toBase64 } from '../src/swarm-common';
 
 const BEE = process.env.BEE_API_URL || 'http://localhost:1633';
 const log = (...a: unknown[]) => console.log('[act-client]', ...a);
@@ -253,4 +258,140 @@ it('Bee opens what the client granted to the node, under the client key', async 
   const old = await readAsNode(encrypted, revoked.historyAddress, grantedAt);
   log('Bee after revocation, first version at its time:', old.status);
   expect(await old.text()).toBe(text);
+});
+
+/**
+ * window.swarm as Freedom serves its chunk methods: single chunks through
+ * the node's /chunks API, nothing else.
+ */
+const chunkProvider = (batch: string): SwarmProvider => ({
+  async request({ method, params }) {
+    const p = params as {
+      reference?: string;
+      data?: Uint8Array;
+      span?: number;
+    };
+    if (method === 'swarm_publishChunk') {
+      const span = new Uint8Array(8);
+      new DataView(span.buffer).setBigUint64(0, BigInt(p.span!), true);
+      return json<{ reference: string }>(
+        await fetch(`${BEE}/chunks`, {
+          method: 'POST',
+          body: concatBytes(span, p.data!),
+          headers: {
+            'content-type': 'application/octet-stream',
+            'swarm-postage-batch-id': batch,
+            'swarm-deferred-upload': 'false',
+          },
+        }),
+      );
+    }
+    if (method === 'swarm_readChunk') {
+      const r = await fetch(`${BEE}/chunks/${p.reference}`);
+      if (!r.ok) throw new Error(`chunk ${r.status}`);
+      const raw = new Uint8Array(await r.arrayBuffer());
+      return {
+        data: toBase64(raw.slice(8)),
+        encoding: 'base64',
+        span: Number(new DataView(raw.buffer).getBigUint64(0, true)),
+      };
+    }
+    throw new Error(`not offered here: ${method}`);
+  },
+});
+
+it('works through single-chunk provider methods only, both ways', async () => {
+  const batch = (
+    await json<{ stamps: { batchID: string; usable: boolean }[] }>(
+      await fetch(`${BEE}/stamps`),
+    )
+  ).stamps.find((x) => x.usable)!.batchID;
+  const node = (
+    await json<{ publicKey: string }>(await fetch(`${BEE}/addresses`))
+  ).publicKey;
+  const provider = chunkProvider(batch);
+  const load = providerByteLoader(provider);
+  const upload = providerByteUploader(provider);
+  const post = (path: string, body: string, headers: Record<string, string>) =>
+    fetch(`${BEE}${path}`, {
+      method: 'POST',
+      body,
+      headers: {
+        'swarm-postage-batch-id': batch,
+        'swarm-deferred-upload': 'false',
+        ...headers,
+      },
+    });
+
+  // The page grants 40 readers and the node; its ACT spans several chunks.
+  const publisherPrivateKey = secp256k1.utils.randomSecretKey();
+  const publisher = bytesToHex(
+    secp256k1.getPublicKey(publisherPrivateKey, true),
+  );
+  const others = Array.from({ length: 40 }, () =>
+    bytesToHex(secp256k1.getPublicKey(secp256k1.utils.randomSecretKey(), true)),
+  );
+  const text = `granted through chunks ${new Date().toISOString()}`;
+  const plain = (
+    await json<{ reference: string }>(
+      await post('/bzz?name=note.txt', text, {
+        'content-type': 'text/plain',
+        'swarm-collection': 'false',
+      }),
+    )
+  ).reference;
+  const granted = await grantActAccess({
+    load,
+    upload,
+    publisherPrivateKey,
+    grantees: [...others, node],
+  });
+  const actSize = (await load(granted.actReference)).length;
+  log('page-built ACT:', actSize, 'bytes, written chunk by chunk');
+  expect(actSize).toBeGreaterThan(4096);
+  const encrypted = await encryptActReference({
+    load,
+    historyAddress: granted.historyAddress,
+    publisherPrivateKey,
+    reference: plain,
+  });
+  const read = await fetch(`${BEE}/bzz/${encrypted}/`, {
+    headers: {
+      'swarm-act': 'true',
+      'swarm-act-publisher': publisher,
+      'swarm-act-history-address': granted.historyAddress,
+    },
+  });
+  log('Bee read the page-built ACT:', read.status);
+  expect(await read.text()).toBe(text);
+
+  // And the page reads what Bee granted, through chunk reads alone.
+  const readerKey = secp256k1.utils.randomSecretKey();
+  const grantee = await json<{ historyref: string }>(
+    await post(
+      '/grantee',
+      JSON.stringify({
+        grantees: [bytesToHex(secp256k1.getPublicKey(readerKey, true))],
+      }),
+      { 'content-type': 'application/json' },
+    ),
+  );
+  const uploaded = await post('/bzz?name=note.txt', `${text} (by Bee)`, {
+    'content-type': 'text/plain',
+    'swarm-collection': 'false',
+    'swarm-act': 'true',
+    'swarm-act-history-address': grantee.historyref,
+  });
+  const beeEncrypted = (await json<{ reference: string }>(uploaded)).reference;
+  const opened = await openActReference({
+    load,
+    historyAddress:
+      uploaded.headers.get('swarm-act-history-address') ?? grantee.historyref,
+    publisherPublicKey: node,
+    privateKey: readerKey,
+    encryptedReference: beeEncrypted,
+  });
+  const back = await fetch(`${BEE}/bzz/${opened}/`);
+  expect(await back.text()).toBe(`${text} (by Bee)`);
+  log('page opened a Bee grant through chunk reads alone: ok');
 });

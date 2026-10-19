@@ -48,6 +48,8 @@ import {
 
 const load = beeByteLoader({ beeUrl }); // any node or gateway
 const upload = beeByteUploader({ beeUrl, postageBatchId });
+// or, in a browser with window.swarm (Freedom), single chunks only:
+// providerByteLoader(window.swarm), providerByteUploader(window.swarm)
 
 const { historyAddress } = await grantActAccess({
   load,
@@ -73,6 +75,8 @@ const opened = await openActReference({
 }); // === reference; read it with any bzz or bytes read
 ```
 
+ACT data is stored as raw bytes, not wrapped in a manifest as `uploadData` does. Over a provider, which offers single chunks, `swarm-bytes` splits and joins chunk trees in the page exactly as Bee does, so references are the same either way (pinned against bee-js's Merkle tree).
+
 Adding grantees keeps the access key, so they can also open what was published before; `rekey: true` starts over with a new one for exactly the grantees given, which is how a reader is revoked. What was published earlier stays readable at its own time.
 
 ## Namespaces
@@ -88,7 +92,7 @@ pnpm test
 pnpm build
 ```
 
-Tests sit next to the code. The ones that need Swarm skip themselves unless a Bee node is reachable at `BEE_API_URL` (default `http://localhost:1633`) in the state they test, for example with a usable postage batch. The ACT key derivation and cipher are pinned against vectors from Bee's Go code. `spike/` holds live checks run by hand (`pnpm vitest run --config spike/vitest.config.ts spike/<file>`); `act-client.spike.ts` has Bee grant a key only the test holds and opens the content client-side, then grants the node's key client-side and has Bee open it. A Mantaray manifest written here is byte-identical to Bee's (a test pins a history Bee wrote).
+Tests sit next to the code. The ones that need Swarm skip themselves unless a Bee node is reachable at `BEE_API_URL` (default `http://localhost:1633`) in the state they test, for example with a usable postage batch. The ACT key derivation and cipher are pinned against vectors from Bee's Go code. `spike/` holds live checks run by hand (`pnpm vitest run --config spike/vitest.config.ts spike/<file>`); `act-client.spike.ts` has Bee grant a key only the test holds and opens the content client-side, then grants the node's key client-side and has Bee open it, and does both through single-chunk provider methods as Freedom serves them. A Mantaray manifest written here is byte-identical to Bee's (a test pins a history Bee wrote).
 
 ## Licence
 

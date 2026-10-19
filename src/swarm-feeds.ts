@@ -86,9 +86,16 @@ const bmtRoot = (payload: Uint8Array): Uint8Array => {
   return level;
 };
 
-/** Content address of a single chunk: keccak256(span || bmtRoot). */
-export const chunkAddress = (payload: Uint8Array): Uint8Array =>
-  keccak256(concatBytes(spanBytes(payload.length), bmtRoot(payload)), 'bytes');
+/**
+ * Content address of a single chunk: keccak256(span || bmtRoot). The span
+ * is the payload's length, except in an intermediate chunk of a larger
+ * tree, where it is the length of all the data under it.
+ */
+export const chunkAddress = (
+  payload: Uint8Array,
+  span: number = payload.length,
+): Uint8Array =>
+  keccak256(concatBytes(spanBytes(span), bmtRoot(payload)), 'bytes');
 
 /** Derive a 32-byte feed topic from a human-readable name. */
 export const makeFeedTopic = (name: string): Uint8Array =>

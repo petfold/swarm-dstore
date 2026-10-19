@@ -1,4 +1,5 @@
 export * from './swarm-act';
+export * from './swarm-bytes';
 export * from './swarm-common';
 export * from './swarm-diagnostics';
 export * from './swarm-document-storage';
