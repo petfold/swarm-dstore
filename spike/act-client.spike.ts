@@ -1,13 +1,17 @@
-// Spike: read ACT-protected content in the client, with no node decrypting.
-// Bee (at BEE_API_URL, with a usable postage batch) grants a key that only
-// this test holds; the test then opens the encrypted reference itself with
-// openActReference and reads the plain reference with no ACT headers. Run:
+// Spike: ACT in the client, both ways, against Bee at BEE_API_URL (with a
+// usable postage batch). Reading: Bee grants a key that only this test
+// holds, and the test opens the encrypted reference itself with
+// openActReference. Writing: the test publishes an ACT under its own key,
+// granting the node's key, and Bee opens it with its ACT headers. Run:
 //   pnpm vitest run --config spike/vitest.config.ts spike/act-client.spike.ts
 import { expect, it } from 'vitest';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import {
   ActAccessDeniedError,
   beeByteLoader,
+  beeByteUploader,
+  encryptActReference,
+  grantActAccess,
   openActReference,
 } from '../src/swarm-act';
 import { bytesToHex } from '../src/swarm-common';
@@ -152,4 +156,101 @@ it('a client opens what Bee granted to its key, and nothing else', async () => {
     }),
   ).toBe(plain);
   log('after revocation: the first upload still opens at its time');
+});
+
+it('Bee opens what the client granted to the node, under the client key', async () => {
+  const batch = (
+    await json<{ stamps: { batchID: string; usable: boolean }[] }>(
+      await fetch(`${BEE}/stamps`),
+    )
+  ).stamps.find((x) => x.usable)!.batchID;
+  const node = (
+    await json<{ publicKey: string }>(await fetch(`${BEE}/addresses`))
+  ).publicKey;
+
+  // The publisher is a key only this test holds; never printed.
+  const publisherPrivateKey = secp256k1.utils.randomSecretKey();
+  const publisher = bytesToHex(
+    secp256k1.getPublicKey(publisherPrivateKey, true),
+  );
+  const load = beeByteLoader({ beeUrl: BEE });
+  const upload = beeByteUploader({
+    beeUrl: BEE,
+    postageBatchId: batch,
+    deferredUpload: false,
+  });
+  const uploadPlain = async (text: string) =>
+    (
+      await json<{ reference: string }>(
+        await fetch(`${BEE}/bzz?name=note.txt`, {
+          method: 'POST',
+          body: text,
+          headers: {
+            'content-type': 'text/plain',
+            'swarm-collection': 'false',
+            'swarm-postage-batch-id': batch,
+            'swarm-deferred-upload': 'false',
+          },
+        }),
+      )
+    ).reference;
+  const readAsNode = (
+    encryptedReference: string,
+    historyAddress: string,
+    timestamp?: number,
+  ) =>
+    fetch(`${BEE}/bzz/${encryptedReference}/`, {
+      headers: {
+        'swarm-act': 'true',
+        'swarm-act-publisher': publisher,
+        'swarm-act-history-address': historyAddress,
+        ...(timestamp ? { 'swarm-act-timestamp': String(timestamp) } : {}),
+      },
+    });
+
+  const text = `granted client-side ${new Date().toISOString()}`;
+  const plain = await uploadPlain(text);
+  const granted = await grantActAccess({
+    load,
+    upload,
+    publisherPrivateKey,
+    grantees: [node],
+  });
+  const grantedAt = Math.floor(Date.now() / 1000);
+  const encrypted = await encryptActReference({
+    load,
+    historyAddress: granted.historyAddress,
+    publisherPrivateKey,
+    reference: plain,
+  });
+  log('client granted the node; history', granted.historyAddress.slice(0, 12));
+
+  const read = await readAsNode(encrypted, granted.historyAddress);
+  log('Bee read with its ACT headers:', read.status);
+  expect(read.status).toBe(200);
+  expect(await read.text()).toBe(text);
+
+  // Revoke the node by re-keying for nobody; Bee is refused the next
+  // version but still opens the first at its time.
+  await new Promise((r) => setTimeout(r, 1100));
+  const revoked = await grantActAccess({
+    load,
+    upload,
+    publisherPrivateKey,
+    grantees: [],
+    historyAddress: granted.historyAddress,
+    rekey: true,
+  });
+  const second = await encryptActReference({
+    load,
+    historyAddress: revoked.historyAddress,
+    publisherPrivateKey,
+    reference: await uploadPlain(`${text} (after)`),
+  });
+  const refused = await readAsNode(second, revoked.historyAddress);
+  log('Bee after revocation, new version:', refused.status);
+  expect(refused.ok).toBe(false);
+  const old = await readAsNode(encrypted, revoked.historyAddress, grantedAt);
+  log('Bee after revocation, first version at its time:', old.status);
+  expect(await old.text()).toBe(text);
 });

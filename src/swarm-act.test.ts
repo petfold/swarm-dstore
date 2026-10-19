@@ -7,12 +7,18 @@ import {
   actKeys,
   beeCipher,
   decodeMantarayNode,
+  encryptActReference,
+  grantActAccess,
   lookupActHistory,
   openActReference,
   walkMantarayValues,
+  writeMantaray,
   type ByteLoader,
+  type ByteUploader,
+  type MantarayValue,
 } from './swarm-act';
-import { bytesToHex, concatBytes, hexToBytes } from './swarm-common';
+import { bytesToHex, hexToBytes } from './swarm-common';
+import { chunkAddress } from './swarm-feeds';
 
 /** A private key from a small number, as in the vectors. */
 const priv = (seed: number) =>
@@ -107,25 +113,38 @@ describe('beeCipher', () => {
   });
 });
 
-// ─── An in-memory Mantaray writer, laid out as Bee marshals version 0.2 ───
+/**
+ * An ACT history as Bee 2.8.3 wrote it for `POST /grantee` with one
+ * grantee, the public key of private key 42: its two Mantaray nodes and
+ * the ACT they point to, by reference. The publisher is that node's key.
+ */
+const BEE_HISTORY = {
+  publisher:
+    '03d1ce6bb8e58358c1ce1df302c747cc91bafdc66eb8f5b21e31f6d228f5b5f01e',
+  address: '554b4a2f6d934364c7499134d0520372ec68ef07a1b1eaf96e56b73673d3ec2a',
+  chunks: {
+    '554b4a2f6d934364c7499134d0520372ec68ef07a1b1eaf96e56b73673d3ec2a':
+      '00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f200000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000012133932323333373230333530363233333038373000000000000000000000004de12847ccc03326d704691a638b3046d350eade9ba18a1ae20834dbf5af0968009e7b22656e63727970746564676c726566223a226133616432303161353463323666386562333763613363303836666438373262353363313662623137393337663361373831343135333263376536653933393464663666376464636635363462623133396231623637333332613262363131363663613634383834643035663166303366383665333262353435303931313263227d0a0a0a0a0a0a0a0a0a',
+    '4de12847ccc03326d704691a638b3046d350eade9ba18a1ae20834dbf5af0968':
+      '00000000000000000000000000000000000000000000000000000000000000005768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f2069d36a0d6bd057c87d47516029f6c264ca8374ad4d45fe23cc54c023c3e094a90000000000000000000000000000000000000000000000000000000000000000',
+    '69d36a0d6bd057c87d47516029f6c264ca8374ad4d45fe23cc54c023c3e094a9':
+      '7b22656e7472696573223a7b2239656162646535616539343033306633336366346562376232316563616261663235616164326231646337616166306565333166383730383138326136613566223a7b227265666572656e6365223a2235313361336234306263376130623363636265386238653066623763663932663038333136326433343834336366396230663263303934346134376336346338227d2c2264353037333539616463383330386664343863346432343337356137303136303964613931343536333836653866353831336236623830623137633766363066223a7b227265666572656e6365223a2263383065383966353561373265386630626337313833353435643964646663386631643734373439663235393733396130353666366262663462663261343734227d7d7d',
+  } as Record<string, string>,
+};
 
-const VERSION_02 = hexToBytes(
-  '5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f7b',
-).slice(0, 31);
-
-interface TestEntry {
-  path: Uint8Array;
-  reference: Uint8Array;
-  metadata?: Record<string, string>;
-}
-
+/** Content-addressed like Swarm, for single chunks. */
 class MemoryStore {
   readonly chunks = new Map<string, Uint8Array>();
-  put(data: Uint8Array): string {
-    const ref = keccak256(data).slice(2);
+  constructor(initial: Record<string, string> = {}) {
+    for (const [ref, data] of Object.entries(initial)) {
+      this.chunks.set(ref, hexToBytes(data));
+    }
+  }
+  upload: ByteUploader = async (data) => {
+    const ref = hex(chunkAddress(data));
     this.chunks.set(ref, data);
     return ref;
-  }
+  };
   load: ByteLoader = async (ref) => {
     const data = this.chunks.get(ref);
     if (!data) throw new Error(`missing ${ref}`);
@@ -133,121 +152,103 @@ class MemoryStore {
   };
 }
 
-const metadataBytes = (metadata: Record<string, string>) => {
-  // Bee pads the JSON with newlines so that its 2-byte length and the JSON
-  // fill whole 32-byte segments.
-  const json = new TextEncoder().encode(JSON.stringify(metadata));
-  const padded = Math.max(32, Math.ceil((json.length + 2) / 32) * 32) - 2;
-  const out = new Uint8Array(2 + padded).fill(10);
-  new DataView(out.buffer).setUint16(0, padded);
-  out.set(json, 2);
-  return out;
-};
-
-const commonPrefixLength = (paths: Uint8Array[]) => {
-  let n = 0;
-  while (n < 30 && paths.every((p) => p.length > n && p[n] === paths[0]![n])) {
-    n++;
-  }
-  return n;
-};
-
-/** Store a node for `entries` (paths relative to it) and return its ref. */
-const writeNode = (
-  store: MemoryStore,
-  entries: TestEntry[],
-  obfuscationKey: Uint8Array,
-): { ref: string; hasValue: boolean; metadata?: Record<string, string> } => {
-  const own = entries.find((e) => e.path.length === 0);
-  const groups = new Map<number, TestEntry[]>();
-  for (const e of entries) {
-    if (e.path.length === 0) continue;
-    groups.set(e.path[0]!, [...(groups.get(e.path[0]!) ?? []), e]);
-  }
-  const bitmap = new Uint8Array(32);
-  const forks: Uint8Array[] = [];
-  for (const b of [...groups.keys()].sort((x, y) => x - y)) {
-    const group = groups.get(b)!;
-    const n = commonPrefixLength(group.map((e) => e.path));
-    const child = writeNode(
-      store,
-      group.map((e) => ({ ...e, path: e.path.slice(n) })),
-      obfuscationKey,
-    );
-    bitmap[b >> 3]! |= 1 << (b & 7);
-    const head = new Uint8Array(32);
-    head[0] = (child.hasValue ? 2 : 0) | (child.metadata ? 16 : 0);
-    head[1] = n;
-    head.set(group[0]!.path.slice(0, n), 2);
-    forks.push(
-      concatBytes(
-        head,
-        hexToBytes(child.ref),
-        child.metadata ? metadataBytes(child.metadata) : new Uint8Array(0),
-      ),
-    );
-  }
-  const plain = concatBytes(
-    obfuscationKey,
-    VERSION_02,
-    new Uint8Array([32]),
-    own?.reference ?? new Uint8Array(32),
-    bitmap,
-    ...forks,
-  );
-  const data = plain.map((v, i) => (i < 32 ? v : v ^ obfuscationKey[i % 32]!));
-  return {
-    ref: store.put(data),
-    hasValue: own !== undefined,
-    ...(own?.metadata ? { metadata: own.metadata } : {}),
-  };
-};
-
-const writeManifest = (
-  store: MemoryStore,
-  entries: {
-    path: string;
-    reference: Uint8Array;
-    metadata?: Record<string, string>;
-  }[],
-  obfuscationKey = new Uint8Array(32),
-) =>
-  writeNode(
-    store,
-    entries.map((e) => ({ ...e, path: new TextEncoder().encode(e.path) })),
-    obfuscationKey,
-  ).ref;
-
 const ref = (n: number) => keccak256(new Uint8Array([n]), 'bytes');
 const historyKey = (unixSeconds: number) =>
   (9223372036854775807n - BigInt(unixSeconds)).toString();
+const encode = (s: string) => new TextEncoder().encode(s);
+const decode = (b: Uint8Array) => new TextDecoder().decode(b);
 
-describe('decodeMantarayNode', () => {
-  it('reads a node with an obfuscation key and fork metadata', async () => {
+const collect = async (load: ByteLoader, root: string) => {
+  const out: MantarayValue[] = [];
+  for await (const value of walkMantarayValues(load, root)) out.push(value);
+  return out;
+};
+
+describe('Mantaray as Bee writes it', () => {
+  const bee = new MemoryStore(BEE_HISTORY.chunks);
+
+  it('reads an ACT history Bee wrote', async () => {
+    const [value, ...more] = await collect(bee.load, BEE_HISTORY.address);
+    expect(more).toEqual([]);
+    const granted = 9223372036854775807n - BigInt(decode(value!.path));
+    expect(Number(granted)).toBeGreaterThan(1_790_000_000);
+    expect(value!.metadata?.encryptedglref).toMatch(/^[0-9a-f]{128}$/);
+    const act = JSON.parse(decode(await bee.load(hex(value!.entry))));
+    expect(Object.keys(act.entries)).toHaveLength(2);
+  });
+
+  it('writes the same bytes, so the same reference', async () => {
+    const values = await collect(bee.load, BEE_HISTORY.address);
+    const store = new MemoryStore();
+    expect(await writeMantaray(store.upload, values)).toBe(BEE_HISTORY.address);
+  });
+
+  it('opens what Bee granted to key 42', async () => {
+    const [value] = await collect(bee.load, BEE_HISTORY.address);
+    const timestamp = Number(
+      9223372036854775807n - BigInt(decode(value!.path)),
+    );
+    // Encrypt as the publisher would, with the access key key 42 can see.
+    const act = JSON.parse(decode(await bee.load(hex(value!.entry))));
+    const mine = actKeys(priv(42), hexToBytes(BEE_HISTORY.publisher));
+    const accessKey = beeCipher(
+      mine.accessKeyDecryptionKey,
+      hexToBytes(act.entries[hex(mine.lookupKey)].reference),
+    );
+    const plain = hex(ref(5));
+    const encryptedReference = hex(beeCipher(accessKey, hexToBytes(plain)));
+    const open = (key: Uint8Array) =>
+      openActReference({
+        load: bee.load,
+        historyAddress: BEE_HISTORY.address,
+        publisherPublicKey: BEE_HISTORY.publisher,
+        privateKey: key,
+        encryptedReference,
+        timestamp,
+      });
+    expect(await open(priv(42))).toBe(plain);
+    await expect(open(priv(43))).rejects.toBeInstanceOf(ActAccessDeniedError);
+  });
+});
+
+describe('writeMantaray', () => {
+  it('round-trips paths, entries and metadata', async () => {
+    const store = new MemoryStore();
+    const values: MantarayValue[] = [
+      { path: encode('a'), entry: ref(1) },
+      { path: encode('ab'), entry: ref(2) }, // under a value
+      { path: encode('x'.repeat(70)), entry: ref(3) }, // longer than a prefix
+      { path: encode('docs/readme.md'), entry: ref(4) },
+      // JSON whose 2-byte length makes 32 and 64 bytes: Bee pads these
+      // differently.
+      { path: encode('m30'), entry: ref(5), metadata: { k: 'v'.repeat(22) } },
+      { path: encode('m62'), entry: ref(6), metadata: { k: 'v'.repeat(54) } },
+    ];
+    const root = await writeMantaray(store.upload, values);
+    const back = await collect(store.load, root);
+    const byPath = (v: MantarayValue[]) =>
+      v.map((x) => [decode(x.path), hex(x.entry), x.metadata]).sort();
+    expect(byPath(back)).toEqual(byPath(values));
+  });
+
+  it('reads back with an obfuscation key', async () => {
     const store = new MemoryStore();
     const key = new Uint8Array(32).map((_, i) => 0xa0 + i);
-    const root = writeManifest(
-      store,
+    const root = await writeMantaray(
+      store.upload,
       [
-        { path: 'b', reference: ref(2) },
-        {
-          path: 'a',
-          reference: ref(1),
-          metadata: { encryptedglref: 'x'.repeat(40) },
-        },
+        { path: encode('b'), entry: ref(2) },
+        { path: encode('a'), entry: ref(1), metadata: { name: 'a' } },
       ],
       key,
     );
     const node = decodeMantarayNode(await store.load(root));
-    expect(node.forks.map((f) => new TextDecoder().decode(f.prefix))).toEqual([
-      'a',
-      'b',
+    expect(node.forks.map((f) => decode(f.prefix))).toEqual(['a', 'b']);
+    expect(node.forks[0]!.metadata).toEqual({ name: 'a' });
+    expect((await collect(store.load, root)).map((v) => hex(v.entry))).toEqual([
+      hex(ref(1)),
+      hex(ref(2)),
     ]);
-    expect(node.forks[0]!.metadata).toEqual({ encryptedglref: 'x'.repeat(40) });
-    expect(node.forks[1]!.metadata).toBeUndefined();
-    const values = [];
-    for await (const v of walkMantarayValues(store.load, root)) values.push(v);
-    expect(values.map((v) => hex(v.entry))).toEqual([hex(ref(1)), hex(ref(2))]);
   });
 
   it('rejects data that is not a Mantaray node', () => {
@@ -260,17 +261,17 @@ describe('decodeMantarayNode', () => {
 
 describe('lookupActHistory', () => {
   const store = new MemoryStore();
-  const history = writeManifest(store, [
-    { path: historyKey(1000), reference: ref(1) },
-    { path: historyKey(2000), reference: ref(2) },
+  const history = writeMantaray(store.upload, [
+    { path: encode(historyKey(1000)), entry: ref(1) },
+    { path: encode(historyKey(2000)), entry: ref(2) },
     {
-      path: historyKey(3000),
-      reference: ref(3),
+      path: encode(historyKey(3000)),
+      entry: ref(3),
       metadata: { encryptedglref: 'g3' },
     },
   ]);
   const at = async (t: number) =>
-    (await lookupActHistory(store.load, history, t))?.actReference;
+    (await lookupActHistory(store.load, await history, t))?.actReference;
 
   it('takes the newest entry not after the time', async () => {
     expect(await at(1000)).toBe(hex(ref(1)));
@@ -285,48 +286,152 @@ describe('lookupActHistory', () => {
 
   it('returns the entry metadata', async () => {
     expect(
-      (await lookupActHistory(store.load, history, 3500))?.metadata,
+      (await lookupActHistory(store.load, await history, 3500))?.metadata,
     ).toEqual({ encryptedglref: 'g3' });
   });
 });
 
-describe('openActReference', () => {
-  // A publisher (7) grants a reader (42), as Bee's grantee upload does.
+describe('granting in the client', () => {
+  // Publisher 7 grants reader 42, then adds 43, then re-keys for 43 only.
   const store = new MemoryStore();
-  const plainReference = hex(ref(99));
-  const reader = actKeys(priv(42), pub(7));
-  const act = {
-    entries: {
-      [hex(reader.lookupKey)]: {
-        reference: hex(
-          beeCipher(reader.accessKeyDecryptionKey, hexToBytes(ACCESS_KEY)),
-        ),
-        metadata: {},
-      },
-    },
-  };
-  const actRef = store.put(new TextEncoder().encode(JSON.stringify(act)));
-  const history = writeManifest(store, [
-    { path: historyKey(1000), reference: hexToBytes(actRef) },
-  ]);
-  const encryptedReference = hex(
-    beeCipher(hexToBytes(ACCESS_KEY), hexToBytes(plainReference)),
-  );
-  const open = (privateKey: string | Uint8Array) =>
+  const { load, upload } = store;
+  const publisherPrivateKey = priv(7);
+  const open = (
+    privateKey: Uint8Array,
+    historyAddress: string,
+    encryptedReference: string,
+    timestamp: number,
+  ) =>
     openActReference({
-      load: store.load,
-      historyAddress: history,
-      publisherPublicKey: hex(pub(7)),
+      load,
+      historyAddress,
+      publisherPublicKey: pub(7),
       privateKey,
       encryptedReference,
+      timestamp,
+    });
+  const encrypt = (historyAddress: string, plain: string, timestamp: number) =>
+    encryptActReference({
+      load,
+      historyAddress,
+      publisherPrivateKey,
+      reference: plain,
+      timestamp,
     });
 
-  it('opens the reference with a granted key', async () => {
-    expect(await open(priv(42))).toBe(plainReference);
-    expect(await open(`0x${hex(priv(42))}`)).toBe(plainReference);
+  it('grants, adds a reader, and revokes by re-keying', async () => {
+    const first = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey,
+      grantees: [hex(pub(42))],
+      timestamp: 1000,
+    });
+    const v1 = await encrypt(first.historyAddress, hex(ref(1)), 1000);
+    expect(await open(priv(42), first.historyAddress, v1, 1000)).toBe(
+      hex(ref(1)),
+    );
+    // The publisher can always open its own content.
+    expect(await open(priv(7), first.historyAddress, v1, 1000)).toBe(
+      hex(ref(1)),
+    );
+    await expect(
+      open(priv(43), first.historyAddress, v1, 1000),
+    ).rejects.toBeInstanceOf(ActAccessDeniedError);
+
+    // Adding keeps the access key: 43 can open what came before.
+    const second = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey,
+      grantees: [pub(43)],
+      historyAddress: first.historyAddress,
+      timestamp: 2000,
+    });
+    expect(await open(priv(43), second.historyAddress, v1, 2000)).toBe(
+      hex(ref(1)),
+    );
+    expect(await open(priv(42), second.historyAddress, v1, 2000)).toBe(
+      hex(ref(1)),
+    );
+
+    // Re-keying for 43 alone revokes 42 from then on.
+    const third = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey,
+      grantees: [pub(43)],
+      historyAddress: second.historyAddress,
+      rekey: true,
+      timestamp: 3000,
+    });
+    const v3 = await encrypt(third.historyAddress, hex(ref(3)), 3000);
+    expect(await open(priv(43), third.historyAddress, v3, 3000)).toBe(
+      hex(ref(3)),
+    );
+    await expect(
+      open(priv(42), third.historyAddress, v3, 3000),
+    ).rejects.toBeInstanceOf(ActAccessDeniedError);
+    // What 42 could read before stays open at its time.
+    expect(await open(priv(42), third.historyAddress, v1, 1000)).toBe(
+      hex(ref(1)),
+    );
+    expect(await collect(load, third.historyAddress)).toHaveLength(3);
   });
 
-  it('refuses a key that was not granted', async () => {
-    await expect(open(priv(43))).rejects.toBeInstanceOf(ActAccessDeniedError);
+  it('replaces a grant made in the same second', async () => {
+    const a = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey,
+      grantees: [pub(42)],
+      timestamp: 5000,
+    });
+    const b = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey,
+      grantees: [pub(43)],
+      historyAddress: a.historyAddress,
+      timestamp: 5000,
+    });
+    const values = await collect(load, b.historyAddress);
+    expect(values).toHaveLength(1);
+    expect(hex(values[0]!.entry)).toBe(b.actReference);
+  });
+
+  it('writes the ACT as Go does: keys sorted, no empty metadata', async () => {
+    const { actReference } = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey,
+      grantees: [pub(42), pub(43), pub(44)],
+      timestamp: 6000,
+    });
+    const text = decode(await load(actReference));
+    const keys = Object.keys(JSON.parse(text).entries);
+    expect(keys).toEqual([...keys].sort());
+    expect(keys).toHaveLength(4);
+    expect(text).not.toContain('metadata');
+  });
+
+  it('refuses to extend a history the key did not publish', async () => {
+    const theirs = await grantActAccess({
+      load,
+      upload,
+      publisherPrivateKey: priv(8),
+      grantees: [],
+      timestamp: 7000,
+    });
+    await expect(
+      grantActAccess({
+        load,
+        upload,
+        publisherPrivateKey,
+        grantees: [pub(42)],
+        historyAddress: theirs.historyAddress,
+        timestamp: 7001,
+      }),
+    ).rejects.toBeInstanceOf(ActAccessDeniedError);
   });
 });
